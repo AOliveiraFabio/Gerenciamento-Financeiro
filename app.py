@@ -128,13 +128,15 @@ if menu == "Dashboard Analítico":
 # ==========================================
 elif menu == "Fluxo de Caixa":
     st.title("💸 Gestão Diária de Caixa")
-    tab1, tab2 = st.tabs(["📂 Importação Expressa (CSV)", "➕ Lançamento Manual"])
+    # Adicionamos uma terceira aba para Gestão
+    tab1, tab2, tab3 = st.tabs(["📂 Importação Expressa (CSV)", "➕ Lançamento Manual", "🛠️ Gerenciar Lançamentos"])
     
     with tab1:
-        st.markdown("Faça upload do extrato do seu banco em `.csv`. O sistema deduzirá a categoria para você aprovar.")
+        # ... (seu código de importação CSV permanece igual)
+        st.markdown("Faça upload do extrato do seu banco em `.csv`.")
         arq = st.file_uploader("Envie seu extrato CSV", type=['csv'])
-        
         if arq:
+            # [Mantive sua lógica de processamento de CSV aqui...]
             df_imp = pd.read_csv(arq, sep=None, engine='python')
             c1, c2, c3 = st.columns(3)
             col_data = c1.selectbox("Coluna Data", df_imp.columns)
@@ -147,7 +149,6 @@ elif menu == "Fluxo de Caixa":
                     df_clean['Data'] = pd.to_datetime(df_imp[col_data], dayfirst=True).dt.date
                 except:
                     df_clean['Data'] = datetime.now().date()
-                    
                 df_clean['Descrição'] = df_imp[col_desc]
                 valores = df_imp[col_val].astype(str).str.replace(',', '.').astype(float)
                 df_clean['Valor'] = valores.abs()
@@ -158,18 +159,18 @@ elif menu == "Fluxo de Caixa":
         if 'df_processado' in st.session_state:
             st.success("🤖 Pronto! Valide os dados e salve.")
             df_final = st.data_editor(st.session_state['df_processado'], use_container_width=True, num_rows="dynamic")
-            
             if st.button("💾 Salvar Lançamentos"):
                 for _, row in df_final.iterrows():
                     nova_t = Transacao(data=row['Data'], mes_ano=row['Data'].strftime("%m/%Y"),
-                        descricao=row['Descrição'], categoria=row['Categoria'], 
-                        tipo=row['Tipo'], natureza=row['Natureza'], valor=row['Valor'])
+                                       descricao=row['Descrição'], categoria=row['Categoria'], 
+                                       tipo=row['Tipo'], natureza=row['Natureza'], valor=row['Valor'])
                     session.add(nova_t)
                 session.commit()
                 del st.session_state['df_processado']
                 st.rerun()
 
     with tab2:
+        # ... (seu formulário de lançamento manual permanece igual)
         with st.form("form_trans"):
             c1, c2, c3 = st.columns(3)
             f_data = c1.date_input("Data")
@@ -186,7 +187,51 @@ elif menu == "Fluxo de Caixa":
                 session.commit()
                 st.rerun()
 
+    with tab3:
+        st.subheader("🗑️ Excluir ou Editar Lançamentos")
+        st.caption(f"Exibindo dados de: {ref}")
+        
+        # Busca todos os itens do mês de referência
+        items_gestao = session.query(Transacao).filter(Transacao.mes_ano == ref).order_by(Transacao.data.desc()).all()
+        
+        if items_gestao:
+            df_gestao = pd.DataFrame([vars(i) for i in items_gestao]).drop('_sa_instance_state', axis=1)
+            
+            # Reordenar colunas para o ID ficar visível
+            cols = ['id', 'data', 'tipo', 'descricao', 'valor', 'categoria', 'natureza']
+            df_gestao = df_gestao[cols]
+
+            # Usamos o data_editor para permitir seleção ou exclusão lógica
+            event = st.dataframe(
+                df_gestao, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", width="small"),
+                    "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f")
+                }
+            )
+
+            # Campo para deletar por ID (Mais seguro e direto)
+            st.divider()
+            col_del1, col_del2 = st.columns([1, 3])
+            id_para_deletar = col_del1.number_input("Digite o ID para excluir:", min_value=0, step=1)
+            
+            if col_del2.button("❌ Confirmar Exclusão Permanente", type="secondary"):
+                item_remover = session.query(Transacao).filter(Transacao.id == id_para_deletar).first()
+                if item_remover:
+                    session.delete(item_remover)
+                    session.commit()
+                    st.success(f"Lançamento {id_para_deletar} removido com sucesso!")
+                    st.rerun()
+                else:
+                    st.error("ID não encontrado.")
+        else:
+            st.info("Nenhum lançamento encontrado para este mês.")
+
     st.divider()
+    # Mantive o visualizador geral no rodapé se você preferir
+    st.subheader("Visualização Rápida")
     items = session.query(Transacao).filter(Transacao.mes_ano == ref).order_by(Transacao.data.desc()).all()
     if items:
         df_view = pd.DataFrame([vars(i) for i in items]).drop('_sa_instance_state', axis=1)
@@ -197,36 +242,70 @@ elif menu == "Fluxo de Caixa":
 # ==========================================
 elif menu == "Metas & Envelope":
     st.title("📦 Caixas e Metas Financeiras")
-    with st.expander("➕ Criar Novo Envelope"):
-        with st.form("form_meta"):
-            c1, c2 = st.columns([1, 4])
-            m_icon = c1.text_input("Emoji", value="✈️")
-            m_nome = c2.text_input("Nome da Meta")
-            c3, c4 = st.columns(2)
-            m_alvo = c3.number_input("Valor Necessário (R$)", min_value=1.0)
-            m_prazo = c4.date_input("Até quando?")
-            if st.form_submit_button("Registrar Meta"):
-                nova_meta = MetaFinanceira(nome=m_nome, valor_alvo=m_alvo, prazo=m_prazo, icone=m_icon)
-                session.add(nova_meta)
-                session.commit()
-                st.rerun()
+    
+    tab_metas1, tab_metas2 = st.tabs(["📊 Visualização e Aportes", "⚙️ Gerenciar Metas"])
 
-    metas = session.query(MetaFinanceira).all()
-    if metas:
-        cols = st.columns(3)
-        for idx, m in enumerate(metas):
-            with cols[idx % 3]:
-                with st.container(border=True):
-                    st.subheader(f"{m.icone} {m.nome}")
-                    progresso = min(m.valor_atual / m.valor_alvo, 1.0) if m.valor_alvo > 0 else 0
-                    st.progress(progresso)
-                    st.markdown(f"**R$ {m.valor_atual:,.2f}** / {m.valor_alvo:,.2f}")
-                    aporte = st.number_input("Aportar:", min_value=0.0, key=f"val_{m.id}")
-                    if st.button("Guardar", key=f"btn_{m.id}") and aporte > 0:
-                        m.valor_atual += aporte
-                        session.commit()
-                        st.rerun()
+    with tab_metas1:
+        with st.expander("➕ Criar Novo Envelope"):
+            with st.form("form_meta"):
+                c1, c2 = st.columns([1, 4])
+                m_icon = c1.text_input("Emoji", value="✈️")
+                m_nome = c2.text_input("Nome da Meta")
+                c3, c4 = st.columns(2)
+                m_alvo = c3.number_input("Valor Necessário (R$)", min_value=1.0)
+                m_prazo = c4.date_input("Até quando?")
+                if st.form_submit_button("Registrar Meta"):
+                    nova_meta = MetaFinanceira(nome=m_nome, valor_alvo=m_alvo, prazo=m_prazo, icone=m_icon)
+                    session.add(nova_meta)
+                    session.commit()
+                    st.rerun()
 
+        metas = session.query(MetaFinanceira).all()
+        if metas:
+            cols = st.columns(3)
+            for idx, m in enumerate(metas):
+                with cols[idx % 3]:
+                    with st.container(border=True):
+                        st.subheader(f"{m.icone} {m.nome}")
+                        progresso = min(m.valor_atual / m.valor_alvo, 1.0) if m.valor_alvo > 0 else 0
+                        st.progress(progresso)
+                        st.markdown(f"**R$ {m.valor_atual:,.2f}** / {m.valor_alvo:,.2f}")
+                        aporte = st.number_input("Aportar:", min_value=0.0, key=f"val_{m.id}")
+                        if st.button("Guardar", key=f"btn_{m.id}") and aporte > 0:
+                            m.valor_atual += aporte
+                            session.commit()
+                            st.rerun()
+        else:
+            st.info("Nenhuma meta cadastrada ainda.")
+
+    with tab_metas2:
+        st.subheader("🛠️ Manutenção de Metas")
+        st.caption("Aqui você pode visualizar os IDs das metas e excluir as que foram criadas incorretamente.")
+        
+        metas_lista = session.query(MetaFinanceira).all()
+        if metas_lista:
+            # Criando um DataFrame para facilitar a visualização dos IDs
+            df_metas = pd.DataFrame([
+                {"ID": m.id, "Meta": f"{m.icone} {m.nome}", "Alvo": m.valor_alvo, "Atual": m.valor_atual} 
+                for m in metas_lista
+            ])
+            st.dataframe(df_metas, use_container_width=True, hide_index=True)
+
+            st.divider()
+            c_del1, c_del2 = st.columns([1, 2])
+            id_meta_del = c_del1.number_input("ID da Meta para remover:", min_value=0, step=1, key="del_meta_id")
+            
+            if c_del2.button("🗑️ Excluir Meta Permanentemente", type="secondary"):
+                meta_remover = session.query(MetaFinanceira).filter(MetaFinanceira.id == id_meta_del).first()
+                if meta_remover:
+                    session.delete(meta_remover)
+                    session.commit()
+                    st.success(f"Meta '{meta_remover.nome}' removida!")
+                    st.rerun()
+                else:
+                    st.error("ID da meta não encontrado.")
+        else:
+            st.write("Sem metas para gerenciar.")
 # ==========================================
 # 4. SMART REBALANCE
 # ==========================================
