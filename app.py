@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
-from models import init_db, Usuario, Transacao, Ativo, MetaFinanceira
+from models import init_db, Usuario, Transacao, Ativo, MetaFinanceira, Recorrente  # Adicionado Recorrente
 from engine import FinanceEngine
 from datetime import datetime
 
@@ -31,14 +31,49 @@ st.markdown("""
 # Garante existência do usuário master
 user = session.query(Usuario).first()
 if not user:
-    user = Usuario(nome="Master User")
+    user = Usuario(nome="Master User", valor_hora=24.11, horas_dia=8.8) # Valores baseados no seu perfil
     session.add(user)
     session.commit()
     user = session.query(Usuario).first()
 
+# --- NOVA LÓGICA DE RECORRENTES (PARCELAS + FIXOS) ---
+def processar_recorrentes_v2(sessao, sel_mes, sel_ano):
+    ref_mes_ano = f"{sel_mes:02d}/{sel_ano}"
+    itens = sessao.query(Recorrente).filter(Recorrente.ativo == True).all()
+    
+    for item in itens:
+        # Calcula a diferença de meses entre o início do item e o mês visualizado na sidebar
+        meses_passados = (sel_ano - item.ano_inicio) * 12 + (sel_mes - item.mes_inicio)
+        
+        # Só processa se o mês selecionado for igual ou posterior ao início
+        # E se não ultrapassar o total de parcelas (para fixos, total_parcelas é 999)
+        if meses_passados >= 0 and meses_passados < item.total_parcelas:
+            
+            # Verifica se já existe o lançamento no mês (pela descrição base)
+            existe = sessao.query(Transacao).filter(
+                Transacao.descricao.like(f"%{item.descricao}%"),
+                Transacao.mes_ano == ref_mes_ano
+            ).first()
+
+            if not existe:
+                num_parcela = meses_passados + 1
+                suffix = f" ({num_parcela}/{item.total_parcelas})" if item.tipo_recorrencia == "Parcelada" else ""
+                
+                nova_t = Transacao(
+                    data=datetime(sel_ano, sel_mes, 5).date(), 
+                    mes_ano=ref_mes_ano,
+                    descricao=f"{item.descricao}{suffix}",
+                    categoria=item.categoria,
+                    tipo="Despesa",
+                    natureza=item.natureza,
+                    valor=item.valor
+                )
+                sessao.add(nova_t)
+    sessao.commit()
+
 # --- SIDEBAR NAVIGATION ---
 with st.sidebar:
-    st.title("💵 Gerenciamento Financeiro - Fabio")
+    st.title("💵 Gestão Financeira")
     
     menu = st.radio("Sistemas Ativos", [
         "Dashboard Analítico", 
@@ -55,15 +90,18 @@ with st.sidebar:
     sel_ano = st.number_input("Ano de Referência", value=datetime.now().year)
     ref = f"{sel_mes:02d}/{sel_ano}"
     
+    # GATILHO DE AUTOMAÇÃO: Roda sempre que o mês/ano muda na sidebar
+    processar_recorrentes_v2(session, sel_mes, sel_ano)
+    
     uteis = eng.calcular_dias_uteis(sel_mes, sel_ano)
-    st.success(f"📅 **Neste mês temos:**\n# {uteis} Dias Úteis\n\n*(Exclui sábados, domingos e feriados nacionais)*")
+    st.success(f"📅 **Neste mês temos:**\n# {uteis} Dias Úteis")
 
 # ==========================================
-# 1. DASHBOARD MASTER
+# 1. DASHBOARD ANALÍTICO
 # ==========================================
 if menu == "Dashboard Analítico":
     st.title("🎯 Visão Estratégica e Liquidez")
-    st.caption("Acompanhamento de receita projetada contra despesas reais do período.")
+    st.caption(f"Análise do período: {ref}")
     
     bruto_previsto = uteis * user.horas_dia * user.valor_hora
     liquido_previsto = eng.calcular_irrf_2026(bruto_previsto)
@@ -124,12 +162,11 @@ if menu == "Dashboard Analítico":
         st.plotly_chart(fig_pie, use_container_width=True)
 
 # ==========================================
-# 2. FLUXO DE CAIXA & IMPORTAÇÃO
+# 2. FLUXO DE CAIXA (COM RECORRENTES)
 # ==========================================
 elif menu == "Fluxo de Caixa":
     st.title("💸 Gestão Diária de Caixa")
-    # Adicionamos uma terceira aba para Gestão
-    tab1, tab2, tab3 = st.tabs(["📂 Importação Expressa (CSV)", "➕ Lançamento Manual", "🛠️ Gerenciar Lançamentos"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📂 Importação CSV", "➕ Manual", "🛠️ Gerenciar", "🔁 Recorrentes/Parcelas"])
     
     with tab1:
         # ... (seu código de importação CSV permanece igual)
@@ -170,7 +207,6 @@ elif menu == "Fluxo de Caixa":
                 st.rerun()
 
     with tab2:
-        # ... (seu formulário de lançamento manual permanece igual)
         with st.form("form_trans"):
             c1, c2, c3 = st.columns(3)
             f_data = c1.date_input("Data")
@@ -188,54 +224,93 @@ elif menu == "Fluxo de Caixa":
                 st.rerun()
 
     with tab3:
-        st.subheader("🗑️ Excluir ou Editar Lançamentos")
-        st.caption(f"Exibindo dados de: {ref}")
+        st.subheader("🗑️ Gerenciar Lançamentos do Mês")
         
-        # Busca todos os itens do mês de referência
+        # 1. Busca os itens garantindo uma lista limpa
         items_gestao = session.query(Transacao).filter(Transacao.mes_ano == ref).order_by(Transacao.data.desc()).all()
         
         if items_gestao:
             df_gestao = pd.DataFrame([vars(i) for i in items_gestao]).drop('_sa_instance_state', axis=1)
+            st.dataframe(df_gestao[['id', 'data', 'descricao', 'valor', 'tipo']], use_container_width=True, hide_index=True)
             
-            # Reordenar colunas para o ID ficar visível
-            cols = ['id', 'data', 'tipo', 'descricao', 'valor', 'categoria', 'natureza']
-            df_gestao = df_gestao[cols]
-
-            # Usamos o data_editor para permitir seleção ou exclusão lógica
-            event = st.dataframe(
-                df_gestao, 
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", width="small"),
-                    "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f")
-                }
-            )
-
-            # Campo para deletar por ID (Mais seguro e direto)
             st.divider()
-            col_del1, col_del2 = st.columns([1, 3])
-            id_para_deletar = col_del1.number_input("Digite o ID para excluir:", min_value=0, step=1)
+            c_id, c_btn = st.columns([1, 2])
             
-            if col_del2.button("❌ Confirmar Exclusão Permanente", type="secondary"):
-                item_remover = session.query(Transacao).filter(Transacao.id == id_para_deletar).first()
-                if item_remover:
-                    session.delete(item_remover)
-                    session.commit()
-                    st.success(f"Lançamento {id_para_deletar} removido com sucesso!")
-                    st.rerun()
+            # Use um key único para evitar conflitos de estado
+            id_para_remover = c_id.number_input("ID para remover", min_value=0, step=1, key="input_delete_final")
+            
+            if c_btn.button("❌ Confirmar Exclusão", type="primary", use_container_width=True):
+                if id_para_remover > 0:
+                    # Buscando especificamente pelo ID
+                    item = session.query(Transacao).filter(Transacao.id == id_para_remover).first()
+                    
+                    if item:
+                        try:
+                            session.delete(item)
+                            session.commit()
+                            st.success(f"O item #{id_para_remover} foi removido com sucesso!")
+                            # O rerun é essencial para atualizar a lista na tela
+                            st.rerun()
+                        except Exception as e:
+                            session.rollback()
+                            st.error(f"Erro crítico no banco: {e}")
+                    else:
+                        st.error(f"Não encontrei nenhum lançamento com o ID {id_para_remover} neste mês.")
                 else:
-                    st.error("ID não encontrado.")
+                    st.warning("Selecione um ID válido acima de 0.")
         else:
-            st.info("Nenhum lançamento encontrado para este mês.")
+            st.info("Nenhum lançamento encontrado para este período.")
 
-    st.divider()
-    # Mantive o visualizador geral no rodapé se você preferir
-    st.subheader("Visualização Rápida")
-    items = session.query(Transacao).filter(Transacao.mes_ano == ref).order_by(Transacao.data.desc()).all()
-    if items:
-        df_view = pd.DataFrame([vars(i) for i in items]).drop('_sa_instance_state', axis=1)
-        st.dataframe(df_view, use_container_width=True, hide_index=True)
+    with tab4:
+        st.subheader("🔁 Configurar Gastos Fixos e Parcelas")
+        st.caption("Itens cadastrados aqui aparecerão automaticamente em todos os meses selecionados.")
+        
+        with st.expander("➕ Agendar Nova Cobrança"):
+            with st.form("form_recorrente"):
+                desc_rec = st.text_input("Descrição (Ex: Faculdade, Internet, Celular)")
+                col1, col2 = st.columns(2)
+                valor_rec = col1.number_input("Valor por Mês", min_value=0.0)
+                tipo_rec = col2.selectbox("Periodicidade", ["Fixa", "Parcelada"])
+                
+                col3, col4 = st.columns(2)
+                if tipo_rec == "Parcelada":
+                    qtd_p = col3.number_input("Total de Parcelas", min_value=1, value=12)
+                else:
+                    qtd_p = 999
+                data_ini = col4.date_input("Mês de Início")
+                
+                c_cat = st.selectbox("Categoria Padrão", ["Educação", "Assinaturas", "Habitação", "Saúde"])
+                c_nat = st.selectbox("Natureza Padrão", ["Essencial", "Estilo de Vida"])
+
+                if st.form_submit_button("Salvar Agendamento"):
+                    novo_rec = Recorrente(
+                        descricao=desc_rec, valor=valor_rec, tipo_recorrencia=tipo_rec,
+                        total_parcelas=qtd_p, categoria=c_cat, natureza=c_nat,
+                        mes_inicio=data_ini.month, ano_inicio=data_ini.year, ativo=True
+                    )
+                    session.add(novo_rec)
+                    session.commit()
+                    st.success("Agendado! Troque o mês na barra lateral para ver o efeito.")
+                    st.rerun()
+
+        st.divider()
+        st.subheader("📋 Seus Agendamentos")
+        recorrentes_db = session.query(Recorrente).all()
+        if recorrentes_db:
+            df_rec = pd.DataFrame([vars(r) for r in recorrentes_db]).drop('_sa_instance_state', axis=1)
+            # Editor para permitir alterar valor ou desativar
+            editado = st.data_editor(df_rec, use_container_width=True, hide_index=True, 
+                                     column_order=['id', 'descricao', 'valor', 'tipo_recorrencia', 'total_parcelas', 'ativo'])
+            
+            if st.button("Salvar Alterações nos Agendamentos"):
+                for _, row in editado.iterrows():
+                    obj = session.query(Recorrente).get(row['id'])
+                    obj.valor = row['valor']
+                    obj.ativo = row['ativo']
+                    obj.descricao = row['descricao']
+                session.commit()
+                st.success("Atualizado!")
+                st.rerun()
 
 # ==========================================
 # 3. METAS & ENVELOPES

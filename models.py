@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Date
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
@@ -66,6 +66,19 @@ class MetaFinanceira(Base):
     valor_atual = Column(Float, default=0.0)
     prazo = Column(Date)
     icone = Column(String(10), default="🎯")
+
+class Recorrente(Base):
+    __tablename__ = 'recorrentes'
+    id = Column(Integer, primary_key=True)
+    descricao = Column(String)
+    valor = Column(Float)
+    categoria = Column(String)
+    natureza = Column(String)
+    tipo_recorrencia = Column(String) # 'Fixa' ou 'Parcelada'
+    total_parcelas = Column(Integer, default=999) # 999 = infinito/fixo
+    mes_inicio = Column(Integer) # Mês que começou (1-12)
+    ano_inicio = Column(Integer) # Ano que começou
+    ativo = Column(Boolean, default=True)
 
 def init_db():
     """
